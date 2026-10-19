@@ -31,7 +31,7 @@ router = APIRouter(tags=["stream"])
 log = logging.getLogger("ramei.stream")
 SR = 16_000
 WINDOW_S = 3.0
-MAX_BACKLOG_S = 6.0  # drop video frames first when analysis falls behind
+MAX_BACKLOG_S = 6.0  # skip ahead (keeping the latest window's frames) when analysis falls behind
 
 
 def _analyze_window(
@@ -165,10 +165,12 @@ async def stream(websocket: WebSocket, session_id: str) -> None:
                 pcm = np.frombuffer(body[: len(body) // 2 * 2], dtype="<i2")
                 audio = np.concatenate([audio, pcm.astype(np.float32) / 32768.0])
             elif kind == 0x02:
-                backlog = audio.size / SR - cursor
-                if backlog > MAX_BACKLOG_S:
-                    continue  # degrade gracefully: drop video before audio
-                frames.append((audio.size / SR, body))
+                now = audio.size / SR
+                if now - cursor > MAX_BACKLOG_S:
+                    # Behind: the next window skips ahead to the latest WINDOW_S seconds,
+                    # so drop only older frames and keep the face for that window.
+                    frames = [(t, j) for t, j in frames if t >= now - WINDOW_S]
+                frames.append((now, body))
             if audio.size / SR - cursor >= WINDOW_S and (pending is None or pending.done()):
                 backlog = audio.size / SR - cursor
                 if backlog > MAX_BACKLOG_S:
